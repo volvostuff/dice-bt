@@ -1,0 +1,5 @@
+*.id*
+*.dll
+*.nam
+*.til
+__pycache__
