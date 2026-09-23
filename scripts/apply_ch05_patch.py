@@ -70,13 +70,20 @@ MOT_OUT = r"C:\misc\dice\dice_5_6_2_ch05.mot"
 NOP = 0xDE
 RTS = 0xDF
 
+# BT channel baud used by the replacement bring-up (patch F). The CH05/HC-05
+# module must be set to the same value with AT+UART=<baud>,0,0. 460800 matches
+# the stock firmware; 115200 is the fallback for clones whose crystal makes
+# 460800 unreliable.
+BAUD = 460800
+
 
 def new_baud_detect():
     """Replacement body for bt_baud_detect (F). Every instruction encoding
     is copied verbatim from a donor site in the original image."""
     code = bytes()
     code += bytes([0xEC, 0x00])                       # ENTER #0          (donor fb1508)
-    code += bytes.fromhex("b6f1160400080700")         # MOV.L #460800, ser_cur_baud+2 (donor fb0fe2)
+    code += bytes.fromhex("b6f11604")                 # MOV.L #<baud>, ser_cur_baud+2
+    code += BAUD.to_bytes(4, "little")                #   (donor fb0fe2, only imm changes)
     code += bytes.fromhex("182524")                   # MOV.B ser_chan_bt, R0L
     code += bytes.fromhex("cd9e12fc")                 # JSR.A serial_channel_reset
     code += bytes.fromhex("182524")
@@ -126,6 +133,19 @@ PATCHES.append(("C1: NOP P2.1 set", 0xFB12CB, 4, bytes.fromhex("dededede"), Fals
 PATCHES.append(("C2: NOP P2.1 clear", 0xFB12DB, 4, bytes.fromhex("dededede"), False))
 
 
+def rebuild_f(baud):
+    """Regenerate the F patch for another BT channel baud."""
+    global BAUD
+    BAUD = baud
+    for i, (label, start, ln, _body, mand) in enumerate(PATCHES):
+        if label.startswith("F:"):
+            new = new_baud_detect()
+            PATCHES[i] = ("F: bt_baud_detect -> %d bring-up" % baud, start, ln,
+                          new + bytes([NOP]) * (ln - len(new)), mand)
+            return
+    raise SystemExit("F patch not found")
+
+
 def parse_s2(line):
     n = int(line[1])
     assert n == 2, "expected S2, got S%d" % n
@@ -149,10 +169,26 @@ def main():
     ap.add_argument("--with-reset-off", action="store_true",
                     help="also apply C1/C2 (P2.1 -> EN case)")
     ap.add_argument("--out", default=MOT_OUT)
+    ap.add_argument("--baud", type=int, default=BAUD,
+                    help="BT channel baud for patch F (default 460800). Set the "
+                         "module to the same value: AT+UART=<baud>,0,0")
     ap.add_argument("--verify-only", action="store_true")
+    ap.add_argument("--keep-dial", action="store_true",
+                    help="diagnostic build: keep patch B (the ATD dial) so the "
+                         "MCU still transmits on the BT channel on every Open — "
+                         "used to prove the MCU->module direction. Open will fail "
+                         "as before (no OK from the module).")
     args = ap.parse_args()
 
-    active = [p for p in PATCHES if p[4] or args.with_reset_off]
+    if args.baud != BAUD:
+        rebuild_f(args.baud)
+        print("patch F rebuilt for baud = %d" % args.baud)
+
+    active = [p for p in PATCHES
+              if (p[4] or args.with_reset_off)
+              and not (args.keep_dial and p[0].startswith("B:"))]
+    if args.keep_dial:
+        print("keep-dial: patch B excluded (ATD dial stays in place)")
 
     lines = [l.strip() for l in open(MOT_IN, errors="replace")]
     rec = {}          # line_index -> [addr, bytearray]

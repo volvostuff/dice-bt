@@ -3,3 +3,4 @@
 *.nam
 *.til
 __pycache__
+tmp

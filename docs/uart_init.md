@@ -15,14 +15,42 @@ USB-UART** на плате; со стороны хоста он виден ка�
 
 | Канал | Имя в IDB (BSS) | Пины | SFR-режим* | Boot-baud | Роль |
 |---|---|---|---|---|---|
+| Канал (значение `ser_chan_*`) | Имя в IDB (BSS) | Пины | SFR-режим* | Boot-baud | Роль |
+|---|---|---|---|---|---|
 | 0 | `ser_chan_bt` (0x2425) | P0.2 (TX)/P0.3 (RX) | mode 0 | 460800 | **Bluetooth** (SPP, профиль «J2534») |
-| 1 | `ser_chan_usb` (0x2426) | P1.0 (TX)/P1.1 (RX) | mode 2 | 115200 | **USB** (хост-ссылка J2534, мост USB-UART → COM12) |
-| 2 | `ser_chan_dbg` (0x2427) | P3.1 (TX)/P3.2 (RX) | mode 3 | 115200 | **Debug/trace UART** (сервисный/отладочный вывод) |
+| 2 | `ser_chan_usb` (0x2426) | P1.0 (TX)/P1.1 (RX) | mode 2 | 115200 | **USB** (хост-ссылка J2534, мост USB-UART → COM12) |
+| 3 | `ser_chan_dbg` (0x2427) | P3.1 (TX)/P3.2 (RX) | mode 3 | 115200 | **Debug/trace UART** (сервисный/отладочный вывод) |
+
+> **Уточнение 22.09.2026 (проверено по IDB):** индексы каналов — `bt=0`,
+> `usb=2`, `dbg=3` (индекс 1 не используется). Доказательство:
+> `serial_ports_boot_init` (0xFB6E20) зовёт `serial_timer_register` с
+> `PUSH.B #0/#2/#3` и `PUSH.L #2425h/#2426h/#2427h`, а тот делает
+> `*arg_0 = mode`; подтверждают векторы 0xFAA1EC/F0 (`MOV.B #2,R0L;
+> chan_rx_isr`) и 0xFAA1F4/F8 (`MOV.B #3,R0L`). В патчах канал надёжнее
+> сравнивать с самой переменной (`ser_chan_usb`), а не с константой.
 
 \* «Режим» — поле `byte_2642[A0]` структуры канала (стр. 0x2640, шаг 0x63),
-пишется `serial_timer_register` при boot: ch0←mode 0, ch1←mode 2, ch2←mode 3
+пишется `serial_timer_register` при boot: bt←mode 0, usb←mode 2, dbg←mode 3
 (0xfb6e5c/0xfb6f2a/0xfb6fec); по нему `serial_pin_config` (0xfc1770)
 выбирает группу пинов.
+
+### Примитивы канального I/O (проверено 22.09.2026 по IDB)
+
+| Функция | Что делает |
+|---|---|
+| `sub_FC154C(chan, &len, data)` | **единственный продюсер TX-кольца**: кладёт байты в кольцо канала (индекс записи `ser_chan_table` в образе пишет только он). Вызов из `bt_at_send` @0xFB0DF7..0xFB0E06 |
+| `sub_FC15F2(chan, &len, buf)` | выборка байтов из RX-кольца канала (её же использует `bt_rx_read` @0xFB1670) |
+| `chan_rx_append` (0xFC1B92) | **выгрузка TX**, а не приём: берёт байт из TX-кольца (`dword_2673` + `word_2679`) и пишет в регистр данных UART; `unk_2699[chan]` = «есть байт к немедленной отправке». Имя в IDB обманчиво |
+| `chan_rx_isr` (0xFC1E0C..0xFC1E4F) | общий блок наполнения RX-кольца для каналов 2/3 |
+| `sub_FC1E7E` | наполнение RX-кольца канала 0 (BT), абсолютная адресация |
+
+Векторы: 0xFAA1B0 → `sub_FC1E7E` (RX BT), 0xFAA1AC → `sub_FC1E50`
+(TX-empty BT), 0xFAA1EC/F0 → `chan_rx_isr` (канал 2), 0xFAA1F4/F8 → канал 3.
+
+Размеры колец: BT TX 0x4000 / RX 0x2000; USB (ch2) TX 0x400 / RX 0x200.
+Адреса ch2: RX-wr `0x2749`, RX-rd `0x274B`, RX-buf `0x2745`, статус `0x2756`,
+TX-wr `0x273D`. Разбор и практическое применение (мост BT↔USB) —
+[bridge_patch.md](bridge_patch.md).
 
 ### Доказательства
 
